@@ -44,6 +44,45 @@ For example::
     }
     this leaked!
 
+Current Status
+--------------
+
+Currently tracks:
+
+- Timer events (ie, ``setTimeout``)
+    - See `Timeout Handle Re-Use`_
+
+- TCP socket client + server
+    - Because `socket.end()`__ only half-closes the socket, the socket will
+      not be considered entirely closed until the ``close`` event is emitted.
+
+      This may lead to some confusion, as the following apparently correct
+      code will leak an event::
+
+        function openAndCloseSocketLeaking() {
+          return new Promise(res => {
+            const client = net.createConnect({ ... }, () => {
+              client.end(() => res)
+            })
+          })
+        }
+
+      To be completely correct, the socket can only be considered closed once
+      the ``close`` event is emitted::
+
+        function openAndCloseSocketCorrect() {
+          return new Promise(res => {
+            const client = net.createConnect({ ... }, () => {
+              client.end()
+            })
+
+            client.on('close', res)
+          })
+        }
+
+
+__ https://nodejs.org/api/net.html#net_socket_end_data_encoding_callback
+
 
 Using with Tests
 ----------------
@@ -78,6 +117,14 @@ For example::
     setTimeout(() => {}, 10)
   })
 
+Testing
+-------
+
+Run tests with ``npm run test`` or ``npm run test:watch`` (note: one is
+expected to fail, and some are currently failing; see `Timeout Handle
+Re-Use`_; also, tests get progressively slower in watch mode).
+
+Debug with ``DEBUG=1 npm run test``
 
 Caveats
 =======

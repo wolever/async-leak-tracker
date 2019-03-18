@@ -23,6 +23,7 @@ export class LeakedEventTrackerOptions {
   eventsToTrack = [
     'Timer.emitInitNative',
     'FSReqWrap.emitInitNative',
+    'TCP.emitInitNative',
   ]
 
   // Ignore any events triggered by these methods

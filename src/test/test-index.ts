@@ -1,3 +1,4 @@
+import * as net from 'net'
 import { trackLeakedEvents } from '../index'
 import { assert } from '../testing'
 import { writeSync } from 'fs'
@@ -9,11 +10,13 @@ function debug(msg: string) {
 
 async function assertLeaks(func: () => any, leakCount: number, res?: any) {
   const result = await trackLeakedEvents(func)
+  if (result.result && result.result.cleanupFunc)
+    await result.result.cleanupFunc()
   assert.containSubset(result, {
     leakedEventCount: leakCount,
     result: res
   })
-  return result
+  return result.result
 }
 
 const toTrack = [
@@ -27,7 +30,7 @@ const toTrack = [
       })
       return {
         testResult: 'func result',
-        cleanupPromise,
+        cleanupFunc: () => cleanupPromise,
       }
     },
     notLeaky: () => {
@@ -36,20 +39,91 @@ const toTrack = [
       })
     },
   },
+
+  {
+    name: 'socket server listen',
+    setup: () => {
+      const server = net.createServer(socket => {})
+      server.on('error', err => { throw err })
+
+      return { server }
+    },
+
+    cleanupFunc: ({ server }) => {
+      return new Promise(res => {
+        server.close(() => res())
+      })
+    },
+
+    leaky: ({ server }) => {
+      server.listen(() => {})
+      return {
+        testResult: 'func result',
+      }
+    },
+
+    notLeaky: ({ server }) => {
+      return new Promise(res => {
+        server.close(() => res('not leaking'))
+      })
+    },
+  },
+
+  {
+    name: 'socket client',
+    setup: () => {
+      const server = net.createServer(socket => {})
+      server.on('error', err => { throw err })
+
+      return new Promise(res => {
+        server.listen(() => {
+          res({ server })
+        })
+      })
+    },
+
+    cleanupFunc: ({ server }) => {
+      return new Promise(res => server.close(res))
+    },
+
+    leaky: ({ server }) => {
+      return new Promise((res, rej) => {
+        const client = net.createConnection({ port: server.address().port }, () => {
+          res({
+            testResult: 'func result',
+            cleanupFunc: () => client.end(res),
+          })
+        })
+        client.on('error', rej)
+      })
+    },
+
+    notLeaky: ({ server }) => {
+      return new Promise((res, rej) => {
+        const client = net.createConnection({ port: server.address().port }, () => {
+          client.end()
+        })
+        client.on('close', () => res('not leaking'))
+      })
+    },
+  }
 ]
 
 describe('tracked events', () => {
   toTrack.forEach(t => {
     describe(t.name, () => {
-      it('detects leak', async () => {
-        await assertLeaks(t.leaky, 1, {
-          testResult: 'func result',
-        })
-      })
+      async function runTrackedEventTest(func: (setupRes?: any) => any, leaks: number, expectedRes?: any) {
+        const setupRes: any = await (t.setup? t.setup() : {})
+        try {
+          const res = await assertLeaks(() => func(setupRes), leaks, expectedRes)
+        } finally {
+          if (t.cleanupFunc)
+            await t.cleanupFunc(setupRes)
+        }
+      }
 
-      it('detects no leak', async () => {
-        await assertLeaks(t.notLeaky, 0, 'not leaking')
-      })
+      it('detects leak', () => runTrackedEventTest(t.leaky, 1, { testResult: 'func result' }))
+      it('detects no leak', () => runTrackedEventTest(t.notLeaky, 0, 'not leaking'))
     })
   })
 })
